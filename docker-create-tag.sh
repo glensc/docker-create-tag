@@ -1,0 +1,1 @@
+# Create Docker image tag using Registry v2 API
