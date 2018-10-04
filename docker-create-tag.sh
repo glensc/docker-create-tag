@@ -74,7 +74,7 @@ request_url() {
 	fi
 
 	# discover auth and retry
-	local realm service scope
+	local realm service scope token
 	discover_auth "$url" -X "$method"
 
 	token=$(get_token "$realm" "$service" "$scope")
@@ -82,7 +82,7 @@ request_url() {
 }
 
 get_token() {
-	local realm="$1" service="$2" scope="$3"
+	local realm="$1" service="$2" scope="$3" response
 	shift 3
 
 	if [ -n "$USERNAME" ]; then
