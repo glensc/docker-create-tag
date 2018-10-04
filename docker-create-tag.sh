@@ -15,7 +15,6 @@ set -eu
 PROGRAM=${0##*/}
 
 # defaults
-: ${DOCKER_REGISTRY_AUTH_TOKEN_URL='https://gitlab.example.net/jwt/auth'}
 : ${USERNAME=''}
 : ${PASSWORD=''}
 : ${SOURCE_IMAGE=''}
@@ -36,7 +35,6 @@ Flags:
 
   -u, --username       username for the registry (default: ${USERNAME:-<none>})
   -p, --password       password for the registry (default: ${PASSWORD:-<none>})
-  --auth-url           url to auth token issuer (default: ${DOCKER_REGISTRY_AUTH_TOKEN_URL:-<none>})
 
 Examples:
 
@@ -45,21 +43,53 @@ $PROGRAM registry.example.net/alpine:latest registry.example.net/alpine:recent
 EOF
 }
 
-request_bearer() {
-	local token="$1" url="$2"
+get_param() {
+	local header="$1" param="$2"
+
+	echo "$header" | sed -r -ne 's,.*'"$param"'="([^"]+)".*,\1,p'
+}
+
+discover_auth() {
+	local url="$1" headers header
+	shift
+
+	headers=$(curl -sI "$url" "$@")
+	header=$(echo "$headers" | grep -i '^Www-Authenticate:')
+
+	# Need to extract realm, service and scope from "Www-Authenticate" header:
+	# Www-Authenticate: Bearer realm="https://gitlab.example.net/jwt/auth",service="container_registry",scope="repository:ed/php:pull"
+	realm=$(get_param "$header" realm)
+	service=$(get_param "$header" service)
+	scope=$(get_param "$header" scope)
+}
+
+request_url() {
+	local method="$1" url="$2" rc
 	shift 2
 
-	curl -sSf -H "Authorization: Bearer ${token}" "${url}" "$@"
+	# try unauthenticated
+	curl -sf -X "$method" "${url}" "$@" && rc=$? || rc=$?
+	if [ "$rc" -eq "0" ]; then
+		return 0
+	fi
+
+	# discover auth and retry
+	local realm service scope
+	discover_auth "$url" -X "$method"
+
+	token=$(get_token "$realm" "$service" "$scope")
+	curl -sSf -X "$method" -H "Authorization: Bearer ${token}" "${url}" "$@"
 }
 
 get_token() {
-	local scope="$1" response; shift
+	local realm="$1" service="$2" scope="$3"
+	shift 3
 
 	if [ -n "$USERNAME" ]; then
 		set -- --user "${USERNAME}:${PASSWORD}" "$@"
 	fi
 
-	response=$(curl -sSf "$@" "$DOCKER_REGISTRY_AUTH_TOKEN_URL?client_id=docker&offline_token=true&service=container_registry&scope=$scope")
+	response=$(curl -sSf "$@" "$realm?client_id=docker-create-tag&offline_token=true&service=$service&scope=$scope")
 	echo "$response" | jq -r .token
 }
 
@@ -83,7 +113,7 @@ parse_image() {
 
 parse_options() {
 	local t
-	t=$(getopt -o u:p:h --long user:,password:,auth-url:,help -n "$PROGRAM" -- "$@")
+	t=$(getopt -o u:p:h --long user:,password:,help -n "$PROGRAM" -- "$@")
 	[ $? != 0 ] && exit $?
 	eval set -- "$t"
 
@@ -100,10 +130,6 @@ parse_options() {
 		-p|--password)
 			shift
 			PASSWORD="$1"
-			;;
-		--auth-url)
-			shift
-			DOCKER_REGISTRY_AUTH_TOKEN_URL="$1"
 			;;
 		--)
 			shift
@@ -123,21 +149,19 @@ parse_options() {
 
 main() {
 	local source_image="${1}" target_image="${2}"
-	local registry image tag token manifest
+	local registry image tag manifest
 
 	manifest=$(mktemp)
 
 	parse_image "$source_image"
-	token=$(get_repo_token "$image")
-	request_bearer "$token" "https://$registry/v2/$image/manifests/$tag" \
+	request_url GET "https://$registry/v2/$image/manifests/$tag" \
 		-H 'accept: application/vnd.docker.distribution.manifest.v2+json' \
 		> $manifest
 
 	parse_image "$target_image"
-	token=$(get_repo_token "$image")
-	request_bearer "$token" "https://$registry/v2/$image/manifests/$tag" \
+	request_url PUT "https://$registry/v2/$image/manifests/$tag" \
 		-H 'content-type: application/vnd.docker.distribution.manifest.v2+json' \
-		-XPUT -d "@$manifest"
+		-d "@$manifest"
 
 	rm $manifest
 
