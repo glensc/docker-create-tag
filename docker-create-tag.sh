@@ -18,9 +18,8 @@ PROGRAM=${0##*/}
 : ${DOCKER_REGISTRY_AUTH_TOKEN_URL='https://gitlab.example.net/jwt/auth'}
 : ${USERNAME=''}
 : ${PASSWORD=''}
-COMMAND=''
-ARGUMENTS=''
-TOKEN=''
+: ${SOURCE_IMAGE=''}
+: ${TARGET_IMAGE=''}
 
 die() {
 	echo >&2 "$PROGRAM: ERROR: $*"
@@ -31,7 +30,7 @@ usage() {
 cat <<-EOF
 $PROGRAM - Create Docker image tag using Registry v2 API
 
-Usage: $PROGRAM <command>
+Usage: $PROGRAM <source_image> <target_image>
 
 Flags:
 
@@ -45,7 +44,7 @@ Commands:
 
 Examples:
 
-$PROGRAM tag registry.example.net/alpine:latest registry.example.net/alpine:recent
+$PROGRAM registry.example.net/alpine:latest registry.example.net/alpine:recent
 
 EOF
 }
@@ -121,28 +120,13 @@ parse_options() {
 		shift
 	done
 
-	test -n "${1:-}" || return 0
-	COMMAND="${1}"; shift
-	ARGUMENTS="$*"
+	test "$#" -eq 2 || die "Images not specified or excess arguments"
+	SOURCE_IMAGE="$1"
+	TARGET_IMAGE="$2"
 }
 
 main() {
-	case "$COMMAND" in
-	'')
-		usage
-	;;
-	'tag')
-		tag $ARGUMENTS
-	;;
-	esac
-}
-
-tag() {
-	local source_image="${1:-}" target_image="${2:-}"
-
-	test -n "$source_image" || die "Source Image missing"
-	test -n "$target_image" || die "Target Image missing"
-
+	local source_image="${1}" target_image="${2}"
 	local registry image tag token manifest
 
 	manifest=$(mktemp)
@@ -165,4 +149,4 @@ tag() {
 }
 
 parse_options "$@"
-main
+main "$SOURCE_IMAGE" "$TARGET_IMAGE"
