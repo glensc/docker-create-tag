@@ -93,12 +93,6 @@ get_token() {
 	echo "$response" | jq -r .token
 }
 
-get_repo_token() {
-	local repo="$1"
-
-	get_token "repository:$repo:*"
-}
-
 # parses registry.example.net/alpine:latest into
 # - registry
 # - image
