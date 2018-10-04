@@ -38,10 +38,6 @@ Flags:
   -p, --password       password for the registry (default: ${PASSWORD:-<none>})
   --auth-url           url to auth token issuer (default: ${DOCKER_REGISTRY_AUTH_TOKEN_URL:-<none>})
 
-Commands:
-
-  tag       Create tag
-
 Examples:
 
 $PROGRAM registry.example.net/alpine:latest registry.example.net/alpine:recent
