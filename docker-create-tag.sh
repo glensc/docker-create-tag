@@ -95,14 +95,20 @@ download_layers() {
 	done
 }
 
+# https://docs.docker.com/registry/spec/api/#pushing-an-image
 upload_layers() {
 	local registry="$1" image="$2" manifest="$3" layersdir="$4"
-	local digests digest
+	local digests digest status
 
 	digests=$(jq -r '.layers[].digest' "$manifest")
 	for digest in $digests; do
-		request_url PUT "https://$registry/v2/$image/blobs/$digest" \
-			-d "@$layersdir/${digest}.tgz"
+		# HEAD /v2/<name>/blobs/<digest>
+		status=$(request_url HEAD "https://$registry/v2/$image/blobs/$digest" -IL -w "%{http_code}" -o /dev/null)
+		test "$status" = "200" && continue
+
+		echo "Uploading: $digest"
+		request_url POST "https://$registry/v2/$image/blobs/$digest" \
+			-d "@$layersdir/${digest}.tgz" || :
 	done
 }
 
