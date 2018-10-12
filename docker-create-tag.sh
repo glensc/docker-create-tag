@@ -85,6 +85,9 @@ request_url() {
 load_docker_credentials() {
 	local registry="$1" config="${HOME}/.docker/config.json" token decoded
 
+	# reset to globally provided values
+	username="$USERNAME" password="$PASSWORD"
+
 	test -f "$config" || return 0
 	token=$(jq -er ".auths.\"${registry}\".auth" "$config") || return 0
 
@@ -157,8 +160,7 @@ parse_options() {
 
 main() {
 	local source_image="${1}" target_image="${2}"
-	local username="$USERNAME" password="$PASSWORD"
-
+	local username password
 	local registry image tag manifest
 
 	manifest=$(mktemp)
