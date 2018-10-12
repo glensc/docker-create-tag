@@ -84,15 +84,24 @@ request_url() {
 
 # https://devops.stackexchange.com/q/2731
 download_layers() {
-	local registry="$1" image="$2" manifest="$3"
-
-	local digests digest tmpdir
-	tmpdir=$(mktemp -d)
+	local registry="$1" image="$2" manifest="$3" layersdir="$4"
+	local digests digest
 
 	digests=$(jq -r '.layers[].digest' "$manifest")
 	for digest in $digests; do
 		request_url GET "https://$registry/v2/$image/blobs/$digest" \
-			-o "$tmpdir/${digest}.tgz" -L
+			-o "$layersdir/${digest}.tgz" -L
+	done
+}
+
+upload_layers() {
+	local registry="$1" image="$2" manifest="$3" layersdir="$4"
+	local digests digest
+
+	digests=$(jq -r '.layers[].digest' "$manifest")
+	for digest in $digests; do
+		request_url PUT "https://$registry/v2/$image/blobs/$digest" \
+			-d "@$layersdir/${digest}.tgz"
 	done
 }
 
@@ -190,19 +199,22 @@ upload_manifest() {
 main() {
 	local source_image="${1}" target_image="${2}"
 	local username password
-	local registry image tag manifest
+	local registry image tag manifest layersdir
 
 	manifest=$(mktemp)
 	parse_image "$source_image"
 	load_docker_credentials "$registry"
 	download_manifest "$registry" "$image" "$tag" > "$manifest"
-	download_layers "$registry" "$image" "$manifest"
+	layersdir=$(mktemp -d)
+	download_layers "$registry" "$image" "$manifest" "$layersdir"
 
 	parse_image "$target_image"
 	load_docker_credentials "$registry"
+	upload_layers "$registry" "$image" "$manifest" "$layersdir"
 	upload_manifest "$registry" "$image" "$tag" "$manifest"
 
-	rm $manifest
+	rm -r "$layersdir"
+	rm "$manifest"
 
 	echo "Created tag: $source_image -> $target_image"
 }
