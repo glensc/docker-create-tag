@@ -65,12 +65,13 @@ discover_auth() {
 }
 
 request_url() {
-	local method="$1" url="$2" rc
+	local method="$1" url="$2" rc out
 	shift 2
 
 	# try unauthenticated
-	curl -sf -X "$method" "${url}" "$@" && rc=$? || rc=$?
+	out=$(curl -sf -X "$method" "${url}" "$@") && rc=$? || rc=$?
 	if [ "$rc" -eq "0" ]; then
+		echo "$out"
 		return 0
 	fi
 
