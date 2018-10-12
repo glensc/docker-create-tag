@@ -2,11 +2,12 @@
 # Create Docker image tag using Registry v2 API.
 #
 # Author: Elan Ruusamäe <glen@pld-linux.org>
-# URL: https://gist.github.com/glensc/b14b4af29942fc2f22ea36682b860f8f
+# URL: https://github.com/glensc/docker-create-tag
 #
 # Requires:
 # - curl
 # - jq
+# - base64
 #
 # This is tested against GitLab Registry
 
@@ -81,12 +82,28 @@ request_url() {
 	curl -sSf -X "$method" -H "Authorization: Bearer ${token}" "${url}" "$@"
 }
 
+load_docker_credentials() {
+	local registry="$1" config="${HOME}/.docker/config.json" token decoded
+
+	# reset to globally provided values
+	username="$USERNAME" password="$PASSWORD"
+
+	test -f "$config" || return 0
+	token=$(jq -er ".auths.\"${registry}\".auth" "$config") || return 0
+
+	decoded=$(echo "$token" | base64 -d)
+
+	# updates username, password which should be locally scoped from parent
+	username=${decoded%%:*}
+	password=${decoded#*:}
+}
+
 get_token() {
 	local realm="$1" service="$2" scope="$3" response
 	shift 3
 
-	if [ -n "$USERNAME" ]; then
-		set -- --user "${USERNAME}:${PASSWORD}" "$@"
+	if [ -n "$username" ]; then
+		set -- --user "$username:$password" "$@"
 	fi
 
 	response=$(curl -sSf "$@" "$realm?client_id=docker-create-tag&offline_token=true&service=$service&scope=$scope")
@@ -143,16 +160,19 @@ parse_options() {
 
 main() {
 	local source_image="${1}" target_image="${2}"
+	local username password
 	local registry image tag manifest
 
 	manifest=$(mktemp)
 
 	parse_image "$source_image"
+	load_docker_credentials "$registry"
 	request_url GET "https://$registry/v2/$image/manifests/$tag" \
 		-H 'accept: application/vnd.docker.distribution.manifest.v2+json' \
 		> $manifest
 
 	parse_image "$target_image"
+	load_docker_credentials "$registry"
 	request_url PUT "https://$registry/v2/$image/manifests/$tag" \
 		-H 'content-type: application/vnd.docker.distribution.manifest.v2+json' \
 		-d "@$manifest"
