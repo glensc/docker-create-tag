@@ -158,24 +158,34 @@ parse_options() {
 	TARGET_IMAGE="$2"
 }
 
+download_manifest() {
+	local registry="$1" image="$2" tag="$3"
+
+	load_docker_credentials "$registry"
+	request_url GET "https://$registry/v2/$image/manifests/$tag" \
+		-H 'accept: application/vnd.docker.distribution.manifest.v2+json'
+}
+
+upload_manifest() {
+	local registry="$1" image="$2" tag="$3" manifest="$4"
+
+	load_docker_credentials "$registry"
+	request_url PUT "https://$registry/v2/$image/manifests/$tag" \
+		-H 'content-type: application/vnd.docker.distribution.manifest.v2+json' \
+		-d "@$manifest"
+}
+
 main() {
 	local source_image="${1}" target_image="${2}"
 	local username password
 	local registry image tag manifest
 
 	manifest=$(mktemp)
-
 	parse_image "$source_image"
-	load_docker_credentials "$registry"
-	request_url GET "https://$registry/v2/$image/manifests/$tag" \
-		-H 'accept: application/vnd.docker.distribution.manifest.v2+json' \
-		> $manifest
+	download_manifest "$registry" "$image" "$tag" > "$manifest"
 
 	parse_image "$target_image"
-	load_docker_credentials "$registry"
-	request_url PUT "https://$registry/v2/$image/manifests/$tag" \
-		-H 'content-type: application/vnd.docker.distribution.manifest.v2+json' \
-		-d "@$manifest"
+	upload_manifest "$registry" "$image" "$tag" "$manifest"
 
 	rm $manifest
 
