@@ -82,6 +82,20 @@ request_url() {
 	curl -sSf -X "$method" -H "Authorization: Bearer ${token}" "${url}" "$@"
 }
 
+# https://devops.stackexchange.com/q/2731
+download_layers() {
+	local registry="$1" image="$2" manifest="$3"
+
+	local digests digest tmpdir
+	tmpdir=$(mktemp -d)
+
+	digests=$(jq -r '.layers[].digest' "$manifest")
+	for digest in $digests; do
+		request_url GET "https://$registry/v2/$image/blobs/$digest" \
+			-o "$tmpdir/${digest}.tgz" -L
+	done
+}
+
 load_docker_credentials() {
 	local registry="$1" config="${HOME}/.docker/config.json" token decoded
 
@@ -161,7 +175,6 @@ parse_options() {
 download_manifest() {
 	local registry="$1" image="$2" tag="$3"
 
-	load_docker_credentials "$registry"
 	request_url GET "https://$registry/v2/$image/manifests/$tag" \
 		-H 'accept: application/vnd.docker.distribution.manifest.v2+json'
 }
@@ -169,7 +182,6 @@ download_manifest() {
 upload_manifest() {
 	local registry="$1" image="$2" tag="$3" manifest="$4"
 
-	load_docker_credentials "$registry"
 	request_url PUT "https://$registry/v2/$image/manifests/$tag" \
 		-H 'content-type: application/vnd.docker.distribution.manifest.v2+json' \
 		-d "@$manifest"
@@ -182,9 +194,12 @@ main() {
 
 	manifest=$(mktemp)
 	parse_image "$source_image"
+	load_docker_credentials "$registry"
 	download_manifest "$registry" "$image" "$tag" > "$manifest"
+	download_layers "$registry" "$image" "$manifest"
 
 	parse_image "$target_image"
+	load_docker_credentials "$registry"
 	upload_manifest "$registry" "$image" "$tag" "$manifest"
 
 	rm $manifest
