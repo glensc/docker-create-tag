@@ -80,7 +80,7 @@ request_url() {
 	discover_auth "$url" -X "$method"
 
 	token=$(get_token "$realm" "$service" "$scope")
-	curl -sSf -X "$method" -H "Authorization: Bearer ${token}" "${url}" "$@"
+	curl -sSf -m 10 -X "$method" -H "Authorization: Bearer ${token}" "${url}" "$@"
 }
 
 # https://devops.stackexchange.com/q/2731
