@@ -94,6 +94,7 @@ download_layers() {
 	local registry="$1" image="$2" manifest="$3" layersdir="$4"
 	local digests digest url
 
+	# download layers
 	digests=$(jq -r '.layers[].digest' "$manifest")
 	for digest in $digests; do
 		url="https://$registry/v2/$image/blobs/$digest"
@@ -101,6 +102,10 @@ download_layers() {
 		request_url GET "$url" -o "$layersdir/${digest}.tgz" -L
 		print "Done"
 	done
+	# download config
+	digest=$(jq -r '.config.digest' "$manifest")
+	request_url GET "https://$registry/v2/$image/blobs/$digest" \
+		-o "$layersdir/config.json" -L
 }
 
 # https://docs.docker.com/registry/spec/api/#pushing-an-image
@@ -129,10 +134,29 @@ get_filesize() {
 	stat -c "%s" "$filename"
 }
 
+upload_blob() {
+	local digest="$1" file="$2"
+	local url filesize
+
+	get_upload_url "https://$registry/v2/$image/blobs/uploads/"
+	url="$upload_url&digest=$digest"
+	filesize=$(get_filesize "$file")
+	print "[$digest] upload $file ($filesize bytes) to $url"
+	request_url PUT "$url" --data-binary "@$file" \
+		-m 900 \
+		-H 'expect:' \
+		-H 'connection: close' \
+		-H 'content-type: application/octet-stream' \
+		-H "content-length: $filesize"
+
+	print "Done"
+}
+
 upload_layers() {
 	local registry="$1" image="$2" manifest="$3" layersdir="$4"
 	local digests digest status url rc upload_url=''
 
+	# upload layers
 	digests=$(jq -r '.layers[].digest' "$manifest")
 	for digest in $digests; do
 		# HEAD /v2/<name>/blobs/<digest>
@@ -142,20 +166,12 @@ upload_layers() {
 		print "Status $status ($rc)"
 		test "$status" = "200" && continue
 
-		get_upload_url "https://$registry/v2/$image/blobs/uploads/"
-		url="$upload_url&digest=$digest"
-		layer_size=$(get_filesize "$layersdir/$digest.tgz")
-		print "[$digest] upload $layersdir/$digest.tgz ($layer_size bytes) to $url"
-		request_url PUT "$url" --data-binary "@$layersdir/$digest.tgz" \
-			-m 900 \
-			-H 'expect:' \
-			-H 'connection: close' \
-			-H 'content-type: application/vnd.docker.image.rootfs.diff.tar.gzip' \
-			-H "content-length: $layer_size"
-
-		print "Done"
+		upload_blob "$digest" "$layersdir/$digest.tgz"
 	done
-	print "Layers uploaded"
+
+	# upload config
+	digest=$(jq -r '.config.digest' "$manifest")
+	upload_blob "$digest" "$layersdir/config.json"
 }
 
 load_docker_credentials() {
