@@ -89,6 +89,7 @@ request_url() {
 }
 
 # https://devops.stackexchange.com/q/2731
+# https://github.com/moby/moby/blob/v17.05.0-ce/contrib/download-frozen-image-v2.sh
 download_layers() {
 	local registry="$1" image="$2" manifest="$3" layersdir="$4"
 	local digests digest url
@@ -98,28 +99,63 @@ download_layers() {
 		url="https://$registry/v2/$image/blobs/$digest"
 		print "Download digest: $url"
 		request_url GET "$url" -o "$layersdir/${digest}.tgz" -L
-		print "OK"
+		print "Done"
 	done
 }
 
 # https://docs.docker.com/registry/spec/api/#pushing-an-image
+get_upload_url() {
+	local uploads_url="$1" tmp
+
+	tmp=$(mktemp)
+	request_url POST "$uploads_url" -o "$tmp" -I
+	upload_url=$(awk -v RS='\r\n' -F': ' 'tolower($1) == "location" { print $2 }' $tmp)
+	rm $tmp
+
+	# add '?' so could safely append parameters with '&'
+	case "$upload_url" in
+	*'?'*)
+		:
+		;;
+	*)
+		upload_url="$upload_url?"
+		;;
+	esac
+}
+
+get_filesize() {
+	local filename="$1"
+
+	stat -c "%s" "$filename"
+}
+
 upload_layers() {
 	local registry="$1" image="$2" manifest="$3" layersdir="$4"
-	local digests digest status url rc
+	local digests digest status url rc upload_url=''
 
 	digests=$(jq -r '.layers[].digest' "$manifest")
 	for digest in $digests; do
 		# HEAD /v2/<name>/blobs/<digest>
 		url="https://$registry/v2/$image/blobs/$digest"
 		print "Check HEAD $url"
-		status=$(request_url HEAD "$url" -IL -w "%{http_code}" -o /dev/null) && rc=$? || rc=$?
+		status=$(request_url HEAD "$url" -IL -w "%{http_code}" -o /dev/null 2>/dev/null) && rc=$? || rc=$?
 		print "Status $status ($rc)"
 		test "$status" = "200" && continue
 
-		print "Uploading: $digest"
-		request_url POST "$url"
-			-d "@$layersdir/${digest}.tgz"
+		get_upload_url "https://$registry/v2/$image/blobs/uploads/"
+		url="$upload_url&digest=$digest"
+		layer_size=$(get_filesize "$layersdir/$digest.tgz")
+		print "[$digest] upload $layersdir/$digest.tgz ($layer_size bytes) to $url"
+		request_url PUT "$url" --data-binary "@$layersdir/$digest.tgz" \
+			-m 900 \
+			-H 'expect:' \
+			-H 'connection: close' \
+			-H 'content-type: application/vnd.docker.image.rootfs.diff.tar.gzip' \
+			-H "content-length: $layer_size"
+
+		print "Done"
 	done
+	print "Layers uploaded"
 }
 
 load_docker_credentials() {
@@ -202,18 +238,23 @@ parse_options() {
 }
 
 download_manifest() {
-	local registry="$1" image="$2" tag="$3"
+	local registry="$1" image="$2" tag="$3" url
 
-	request_url GET "https://$registry/v2/$image/manifests/$tag" \
-		-H 'accept: application/vnd.docker.distribution.manifest.v2+json'
+	url="https://$registry/v2/$image/manifests/$tag"
+	print "Download manifest: $url"
+	request_url GET "$url" \
+		-H 'accept: application/vnd.docker.distribution.manifest.v2+json' \
+		|| die "Manifest download failed"
 }
 
 upload_manifest() {
-	local registry="$1" image="$2" tag="$3" manifest="$4"
+	local registry="$1" image="$2" tag="$3" manifest="$4" url
 
-	request_url PUT "https://$registry/v2/$image/manifests/$tag" \
+	url="https://$registry/v2/$image/manifests/$tag"
+	print "Upload manifest: $url"
+	request_url PUT "$url" \
 		-H 'content-type: application/vnd.docker.distribution.manifest.v2+json' \
-		-d "@$manifest"
+		-d "@$manifest" || die "Manifest upload failed: $manifest"
 }
 
 main() {
@@ -222,7 +263,7 @@ main() {
 	local registry image tag manifest layersdir
 
 	if [ $VERBOSE -gt 0 ]; then
-		exec 3>&2
+		exec 3>&1
 	else
 		exec 3>/dev/null
 	fi
