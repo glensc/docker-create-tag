@@ -20,10 +20,15 @@ PROGRAM=${0##*/}
 : ${PASSWORD=''}
 : ${SOURCE_IMAGE=''}
 : ${TARGET_IMAGE=''}
+: ${VERBOSE=0}
 
 die() {
 	echo >&2 "$PROGRAM: ERROR: $*"
 	exit 1
+}
+
+print() {
+	echo >&3 "$PS4$*"
 }
 
 usage() {
@@ -86,29 +91,34 @@ request_url() {
 # https://devops.stackexchange.com/q/2731
 download_layers() {
 	local registry="$1" image="$2" manifest="$3" layersdir="$4"
-	local digests digest
+	local digests digest url
 
 	digests=$(jq -r '.layers[].digest' "$manifest")
 	for digest in $digests; do
-		request_url GET "https://$registry/v2/$image/blobs/$digest" \
-			-o "$layersdir/${digest}.tgz" -L
+		url="https://$registry/v2/$image/blobs/$digest"
+		print "Download digest: $url"
+		request_url GET "$url" -o "$layersdir/${digest}.tgz" -L
+		print "OK"
 	done
 }
 
 # https://docs.docker.com/registry/spec/api/#pushing-an-image
 upload_layers() {
 	local registry="$1" image="$2" manifest="$3" layersdir="$4"
-	local digests digest status
+	local digests digest status url rc
 
 	digests=$(jq -r '.layers[].digest' "$manifest")
 	for digest in $digests; do
 		# HEAD /v2/<name>/blobs/<digest>
-		status=$(request_url HEAD "https://$registry/v2/$image/blobs/$digest" -IL -w "%{http_code}" -o /dev/null)
+		url="https://$registry/v2/$image/blobs/$digest"
+		print "Check HEAD $url"
+		status=$(request_url HEAD "$url" -IL -w "%{http_code}" -o /dev/null) && rc=$? || rc=$?
+		print "Status $status ($rc)"
 		test "$status" = "200" && continue
 
-		echo "Uploading: $digest"
-		request_url POST "https://$registry/v2/$image/blobs/$digest" \
-			-d "@$layersdir/${digest}.tgz" || :
+		print "Uploading: $digest"
+		request_url POST "$url"
+			-d "@$layersdir/${digest}.tgz"
 	done
 }
 
@@ -154,7 +164,7 @@ parse_image() {
 
 parse_options() {
 	local t
-	t=$(getopt -o u:p:h --long user:,password:,help -n "$PROGRAM" -- "$@")
+	t=$(getopt -o u:p:hv --long user:,password:,help,verbose -n "$PROGRAM" -- "$@")
 	[ $? != 0 ] && exit $?
 	eval set -- "$t"
 
@@ -167,6 +177,9 @@ parse_options() {
 		-u|--user)
 			shift
 			USERNAME="$1"
+			;;
+		-v|--verbse)
+			VERBOSE=$((VERBOSE+1))
 			;;
 		-p|--password)
 			shift
@@ -207,6 +220,12 @@ main() {
 	local source_image="${1}" target_image="${2}"
 	local username password
 	local registry image tag manifest layersdir
+
+	if [ $VERBOSE -gt 0 ]; then
+		exec 3>&2
+	else
+		exec 3>/dev/null
+	fi
 
 	manifest=$(mktemp)
 	parse_image "$source_image"
