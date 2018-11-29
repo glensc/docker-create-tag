@@ -20,10 +20,15 @@ PROGRAM=${0##*/}
 : ${PASSWORD=''}
 : ${SOURCE_IMAGE=''}
 : ${TARGET_IMAGE=''}
+: ${VERBOSE=0}
 
 die() {
 	echo >&2 "$PROGRAM: ERROR: $*"
 	exit 1
+}
+
+print() {
+	echo >&3 "$PS4$*"
 }
 
 usage() {
@@ -65,12 +70,13 @@ discover_auth() {
 }
 
 request_url() {
-	local method="$1" url="$2" rc
+	local method="$1" url="$2" rc out
 	shift 2
 
 	# try unauthenticated
-	curl -sf -X "$method" "${url}" "$@" && rc=$? || rc=$?
+	out=$(curl -sf -X "$method" "${url}" "$@") && rc=$? || rc=$?
 	if [ "$rc" -eq "0" ]; then
+		echo "$out"
 		return 0
 	fi
 
@@ -79,7 +85,91 @@ request_url() {
 	discover_auth "$url" -X "$method"
 
 	token=$(get_token "$realm" "$service" "$scope")
-	curl -sSf -X "$method" -H "Authorization: Bearer ${token}" "${url}" "$@"
+	curl -sSf -m 10 -X "$method" -H "Authorization: Bearer ${token}" "${url}" "$@"
+}
+
+# https://devops.stackexchange.com/q/2731
+# https://github.com/moby/moby/blob/v17.05.0-ce/contrib/download-frozen-image-v2.sh
+download_layers() {
+	local registry="$1" image="$2" manifest="$3" layersdir="$4"
+	local digests digest url
+
+	# download layers
+	digests=$(jq -r '.layers[].digest' "$manifest")
+	for digest in $digests; do
+		url="https://$registry/v2/$image/blobs/$digest"
+		print "Download digest: $url"
+		request_url GET "$url" -o "$layersdir/${digest}.tgz" -L
+		print "Done"
+	done
+	# download config
+	digest=$(jq -r '.config.digest' "$manifest")
+	request_url GET "https://$registry/v2/$image/blobs/$digest" \
+		-o "$layersdir/config.json" -L
+}
+
+# https://docs.docker.com/registry/spec/api/#pushing-an-image
+get_upload_url() {
+	local uploads_url="$1" tmp
+
+	tmp=$(mktemp)
+	request_url POST "$uploads_url" -o "$tmp" -I
+	upload_url=$(awk -v RS='\r\n' -F': ' 'tolower($1) == "location" { print $2 }' $tmp)
+	rm $tmp
+
+	# add '?' so could safely append parameters with '&'
+	case "$upload_url" in
+	*'?'*)
+		:
+		;;
+	*)
+		upload_url="$upload_url?"
+		;;
+	esac
+}
+
+get_filesize() {
+	local filename="$1"
+
+	stat -c "%s" "$filename"
+}
+
+upload_blob() {
+	local digest="$1" file="$2"
+	local url filesize status
+
+	# HEAD /v2/<name>/blobs/<digest>
+	url="https://$registry/v2/$image/blobs/$digest"
+	print "Check HEAD $url"
+	status=$(request_url HEAD "$url" -IL -w "%{http_code}" -o /dev/null 2>/dev/null) && rc=$? || rc=$?
+	print "Status $status ($rc)"
+	test "$status" = "200" && return
+
+	get_upload_url "https://$registry/v2/$image/blobs/uploads/"
+	url="$upload_url&digest=$digest"
+	filesize=$(get_filesize "$file")
+	print "[$digest] upload $file ($filesize bytes) to $url"
+	request_url PUT "$url" --data-binary "@$file" \
+		-m 900 \
+		-H 'expect:' \
+		-H 'connection: close' \
+		-H 'content-type: application/octet-stream' \
+		-H "content-length: $filesize"
+}
+
+upload_layers() {
+	local registry="$1" image="$2" manifest="$3" layersdir="$4"
+	local digests digest status url rc upload_url=''
+
+	# upload layers
+	digests=$(jq -r '.layers[].digest' "$manifest")
+	for digest in $digests; do
+		upload_blob "$digest" "$layersdir/$digest.tgz"
+	done
+
+	# upload config
+	digest=$(jq -r '.config.digest' "$manifest")
+	upload_blob "$digest" "$layersdir/config.json"
 }
 
 load_docker_credentials() {
@@ -124,7 +214,7 @@ parse_image() {
 
 parse_options() {
 	local t
-	t=$(getopt -o u:p:h --long user:,password:,help -n "$PROGRAM" -- "$@")
+	t=$(getopt -o u:p:hv --long user:,password:,help,verbose -n "$PROGRAM" -- "$@")
 	[ $? != 0 ] && exit $?
 	eval set -- "$t"
 
@@ -137,6 +227,9 @@ parse_options() {
 		-u|--user)
 			shift
 			USERNAME="$1"
+			;;
+		-v|--verbse)
+			VERBOSE=$((VERBOSE+1))
 			;;
 		-p|--password)
 			shift
@@ -158,26 +251,51 @@ parse_options() {
 	TARGET_IMAGE="$2"
 }
 
+download_manifest() {
+	local registry="$1" image="$2" tag="$3" url
+
+	url="https://$registry/v2/$image/manifests/$tag"
+	print "Download manifest: $url"
+	request_url GET "$url" \
+		-H 'accept: application/vnd.docker.distribution.manifest.v2+json' \
+		|| die "Manifest download failed"
+}
+
+upload_manifest() {
+	local registry="$1" image="$2" tag="$3" manifest="$4" url
+
+	url="https://$registry/v2/$image/manifests/$tag"
+	print "Upload manifest: $url"
+	request_url PUT "$url" \
+		-H 'content-type: application/vnd.docker.distribution.manifest.v2+json' \
+		-d "@$manifest" || die "Manifest upload failed: $manifest"
+}
+
 main() {
 	local source_image="${1}" target_image="${2}"
 	local username password
-	local registry image tag manifest
+	local registry image tag manifest layersdir
+
+	if [ $VERBOSE -gt 0 ]; then
+		exec 3>&1
+	else
+		exec 3>/dev/null
+	fi
 
 	manifest=$(mktemp)
-
 	parse_image "$source_image"
 	load_docker_credentials "$registry"
-	request_url GET "https://$registry/v2/$image/manifests/$tag" \
-		-H 'accept: application/vnd.docker.distribution.manifest.v2+json' \
-		> $manifest
+	download_manifest "$registry" "$image" "$tag" > "$manifest"
+	layersdir=$(mktemp -d)
+	download_layers "$registry" "$image" "$manifest" "$layersdir"
 
 	parse_image "$target_image"
 	load_docker_credentials "$registry"
-	request_url PUT "https://$registry/v2/$image/manifests/$tag" \
-		-H 'content-type: application/vnd.docker.distribution.manifest.v2+json' \
-		-d "@$manifest"
+	upload_layers "$registry" "$image" "$manifest" "$layersdir"
+	upload_manifest "$registry" "$image" "$tag" "$manifest"
 
-	rm $manifest
+	rm -r "$layersdir"
+	rm "$manifest"
 
 	echo "Created tag: $source_image -> $target_image"
 }
