@@ -136,7 +136,14 @@ get_filesize() {
 
 upload_blob() {
 	local digest="$1" file="$2"
-	local url filesize
+	local url filesize status
+
+	# HEAD /v2/<name>/blobs/<digest>
+	url="https://$registry/v2/$image/blobs/$digest"
+	print "Check HEAD $url"
+	status=$(request_url HEAD "$url" -IL -w "%{http_code}" -o /dev/null 2>/dev/null) && rc=$? || rc=$?
+	print "Status $status ($rc)"
+	test "$status" = "200" && return
 
 	get_upload_url "https://$registry/v2/$image/blobs/uploads/"
 	url="$upload_url&digest=$digest"
@@ -148,8 +155,6 @@ upload_blob() {
 		-H 'connection: close' \
 		-H 'content-type: application/octet-stream' \
 		-H "content-length: $filesize"
-
-	print "Done"
 }
 
 upload_layers() {
@@ -159,13 +164,6 @@ upload_layers() {
 	# upload layers
 	digests=$(jq -r '.layers[].digest' "$manifest")
 	for digest in $digests; do
-		# HEAD /v2/<name>/blobs/<digest>
-		url="https://$registry/v2/$image/blobs/$digest"
-		print "Check HEAD $url"
-		status=$(request_url HEAD "$url" -IL -w "%{http_code}" -o /dev/null 2>/dev/null) && rc=$? || rc=$?
-		print "Status $status ($rc)"
-		test "$status" = "200" && continue
-
 		upload_blob "$digest" "$layersdir/$digest.tgz"
 	done
 
