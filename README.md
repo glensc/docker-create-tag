@@ -23,3 +23,10 @@ Alternatively, you can rely on `docker login` storing credentials to `~/.docker/
     - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
     - docker-create-tag $CONTAINER_BUILD_IMAGE $CONTAINER_PRODUCTION_IMAGE
 ```
+
+## History
+
+This project was created due [reg] tool [lacking the support][reg#88].
+
+[reg]: https://github.com/genuinetools/reg
+[reg#88]: https://github.com/genuinetools/reg/issues/88
